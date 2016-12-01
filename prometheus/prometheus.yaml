@@ -1,0 +1,119 @@
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: prometheus
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: prometheus
+  template:
+    metadata:
+      name: prometheus
+      labels:
+        app: prometheus
+      namespace: monitoring
+    spec:
+      volumes:
+      - name: config-volume
+        configMap:
+          name: prometheus
+      containers:
+      - name: prometheus
+        image: quay.io/prometheus/prometheus:v1.3.1
+        args:
+          - '-storage.local.retention=6h'
+          - '-storage.local.memory-chunks=500000'
+          - '-config.file=/etc/prometheus/prometheus.yml'
+          - '-query.staleness-delta=60s'
+          - '-alertmanager.url=http://prometheus-alertmanager.monitoring.svc.cluster.local:9093'
+        ports:
+        - name: web
+          containerPort: 9090
+        volumeMounts:
+        - name: config-volume
+          mountPath: /etc/prometheus
+---
+apiVersion: v1
+kind: Service
+metadata:
+  annotations:
+    prometheus.io/scrape: 'true'
+  labels:
+    name: prometheus
+  name: prometheus
+  namespace: monitoring
+spec:
+  selector:
+    app: prometheus
+  ports:
+  - name: prometheus
+    protocol: TCP
+    port: 9090
+    targetPort: 9090
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: prometheus
+  namespace: monitoring
+data:
+  prometheus.yml: |-
+    global:
+      scrape_interval: 15s
+    rule_files:
+    - rules.rule
+    scrape_configs:
+      - job_name: 'kubernetes-service-endpoints'
+
+        kubernetes_sd_configs:
+        - role: endpoints
+
+        relabel_configs:
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scrape]
+          action: keep
+          regex: true
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_scheme]
+          action: replace
+          target_label: __scheme__
+          regex: (https?)
+        - source_labels: [__meta_kubernetes_service_annotation_prometheus_io_path]
+          action: replace
+          target_label: __metrics_path__
+          regex: (.+)
+        - source_labels: [__address__, __meta_kubernetes_service_annotation_prometheus_io_port]
+          action: replace
+          target_label: __address__
+          regex: (.+)(?::\d+);(\d+)
+          replacement: $1:$2
+        - action: labelmap
+          regex: __meta_kubernetes_service_label_(.+)
+        - source_labels: [__meta_kubernetes_service_namespace]
+          action: replace
+          target_label: kubernetes_namespace
+        - source_labels: [__meta_kubernetes_service_name]
+          action: replace
+          target_label: kubernetes_name
+        - source_labels: [__meta_kubernetes_service_name]
+          target_label: job
+          replacement: kubernetes_service_$1
+
+  rules.rule : |-
+    ALERT ToDoAppDown
+    IF count(up{name="todo-app"}) < 1
+    FOR 1m
+    LABELS {level="critical"}
+    ANNOTATIONS {
+      summary = "No healthy pods for ToDo App. ",
+      description = "There is no healty prometheus scrape target for todo app. Please check whether application is running. To this by executing Order 42 from operating manual.",
+    }
+    ALERT ToDoAppTooOld
+    IF todoapp_redis_masters_healthy_total{version="v4"} > 0
+    FOR 1m
+    LABELS {level="critical"}
+    ANNOTATIONS {
+      summary = "ToDo App too old.",
+      description = "ToDo App too old. Please rollout a newer version. To this via 'kubectl'",
+      kube_command = "kubectl --namespace=todo-app set image deployment/todo-app todo-app=johscheuer/todo-app-web:v5"
+    }

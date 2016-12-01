@@ -1,0 +1,111 @@
+apiVersion: v1
+kind: Secret
+metadata:
+  name: grafana-login
+  namespace: monitoring
+type: Opaque
+data:
+  password: UEFTU1dPUkQ=
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: grafana-config
+  namespace: monitoring
+data:
+  grafana-source.json: |-
+    {
+      "name":"K8s-Prom",
+      "type":"prometheus",
+      "url":"http://prometheus:9090",
+      "access":"proxy",
+      "basicAuth":false
+    }
+---
+apiVersion: extensions/v1beta1
+kind: Deployment
+metadata:
+  name: grafana
+  namespace: monitoring
+spec:
+  replicas: 1
+  selector:
+    matchLabels:
+      app: grafana
+  template:
+    metadata:
+      name: grafana
+      labels:
+        app: grafana
+    spec:
+      containers:
+      - name: grafana
+        image: grafana/grafana:3.1.1
+        env:
+          - name: GF_SECURITY_ADMIN_PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: grafana-login
+                key: password
+          - name: GF_AUTH_ANONYMOUS_ENABLED
+            value: "false"
+          - name: GF_USERS_ALLOW_SIGN_UP
+            value: "false"
+        ports:
+          - name: web
+            containerPort: 3000
+---
+# TODO auto deploy dashboards 
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: grafana-init
+  namespace: monitoring
+spec:
+  template:
+    metadata:
+      name: grafana-init
+    spec:
+      restartPolicy: Never
+      volumes:
+      - name: grafana-config
+        configMap:
+          name: grafana-config
+      containers:
+      - name: grafana-init
+        image: ubuntu:16.04
+        env:
+          - name: PASSWORD
+            valueFrom:
+              secretKeyRef:
+                name: grafana-login
+                key: password
+        command:
+          - /bin/bash
+          - -xec
+          - |
+            apt-get -qq update && apt-get -qq install -y curl
+            if [[ -z $(curl -sI http://admin:${PASSWORD}@grafana) ]]; then
+              sleep 5 # wait 5 seconds
+            fi
+            curl -vX POST http://admin:${PASSWORD}@grafana/api/datasources -d @/tmp/grafana-source.json --header "Content-Type: application/json"
+        volumeMounts:
+          - name: grafana-config
+            mountPath: /tmp/
+
+---
+apiVersion: v1
+kind: Service
+metadata:
+  labels:
+    name: grafana
+  name: grafana
+  namespace: monitoring
+spec:
+  selector:
+    app: grafana
+  ports:
+  - name: grafana
+    protocol: TCP
+    port: 80
+    targetPort: 3000
